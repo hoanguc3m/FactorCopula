@@ -12,7 +12,7 @@
 // [[Rcpp::depends(RcppArmadillo)]]
 // [[Rcpp::depends(RcppGSL)]]
 
-#define TARGACCEPT 0.44
+#define TARGACCEPT 0.3
 #define NORMDIST 1
 #define STUDDIST 2
 #define HSSTDIST 3
@@ -523,7 +523,7 @@ double likelihood(arma::mat& x, arma::vec& z, arma::mat& rho, int t_max, int n_m
 
 // [[Rcpp::export]]
 double log_studentG(arma::mat& x_student, std::vector<int>& gid, std::vector<int>& g_mem, double nu, double gamma, int t_max, int n_max,int k, int num_mem, int disttype){
-    arma::colvec LL_student(num_mem);
+    arma::colvec LL_student(num_mem, fill::zeros);
     if (disttype == HSSTDIST){
         arma::colvec fseq(x_student.n_rows);
         
@@ -585,7 +585,7 @@ void model_select_LL(arma::mat& x_student, arma::mat& x_normal,
         #pragma omp parallel for default(none) shared(x_student,z,gid,g_mat,nu,gamma,zeta, t_max,n_max,g_count,n_group,sum_LL_stu,sum_LL_gamma, disttype)                
         for (int k = 0; k < n_group; k++){
             sum_LL_stu[k] = - log_studentG(x_student, gid, g_mat[k],nu[k],gamma[k],t_max, n_max, k,g_count[k], disttype);
-            sum_LL_gamma[k] = - (g_count[k] + 1)*0.5*arma::accu(log(zeta.col(k)));
+            sum_LL_gamma[k] = - g_count[k]*0.5*arma::accu(log(zeta.col(k)));
         }
         //Rcpp::Rcout << "i " << i << " LL_rec " << LL_rec(i) << " x_normal " << - arma::accu(-0.5*(log(2 * M_PI) + pow(x_normal,2) ) ) << std::endl;
         //Rcpp::Rcout << "i " << i << " LL_rec " << LL_rec(i) << " x_student " <<  accu(sum_LL_marginal) << std::endl;
@@ -608,6 +608,58 @@ void model_select_LL(arma::mat& x_student, arma::mat& x_normal,
 }
 
 
+void LL_split(arma::mat& x_student, arma::mat& x_normal,
+                     arma::vec& z, std::vector<int>& gid,
+                     std::vector<std::vector<int> >&  g_mat, std::vector<int>& g_count,
+                     arma::rowvec& nu,arma::rowvec& gamma, arma::mat& zeta, 
+                     arma::rowvec& sum_LL_cond,
+                     arma::rowvec& LL_rec_1, arma::rowvec& LL_rec_jwZ_1,
+                     arma::rowvec& LL_rec_2, arma::rowvec& LL_rec_jwZ_2,
+                     int t_max, int n_max, int n_group, int i, int disttype){
+    
+    arma::rowvec sum_LL_stu(n_group, fill::zeros);
+    arma::rowvec sum_LL_gamma(n_group, fill::zeros);    
+    
+    arma::rowvec LL_rec(n_group);LL_rec.fill(0);
+    
+    for (int k = 0; k < n_max; k++){
+            LL_rec[gid[k]] = LL_rec[gid[k]] + sum_LL_cond[k];
+    }
+    //Rcpp::Rcout << "i " << i << " LL_rec " << LL_rec << " x_normal " << - arma::accu(-0.5*(log(2 * M_PI) + pow(x_normal,2) ) ) << std::endl;
+    
+    if (disttype == NORMDIST){
+        for (int k = 0; k < n_max; k++){
+            LL_rec[gid[k]] = LL_rec[gid[k]] + 0.5*(log(2 * M_PI) + pow(x_normal[k],2) );
+        }
+        //Rcpp::Rcout << "i " << i << " LL_rec " << LL_rec(i) << " x_normal " << - arma::accu(-0.5*(log(2 * M_PI) + pow(x_normal,2) ) ) << std::endl;
+        
+    } else{
+        #pragma omp parallel for default(none) shared(x_student,z,gid,g_mat,nu,gamma,zeta, t_max,n_max,g_count,n_group,sum_LL_stu,sum_LL_gamma, disttype)                
+        for (int k = 0; k < n_group; k++){
+            sum_LL_stu[k] = - log_studentG(x_student, gid, g_mat[k],nu[k],gamma[k],t_max, n_max, k,g_count[k], disttype);
+            sum_LL_gamma[k] = - g_count[k]*0.5*arma::accu(log(zeta.col(k)));
+        }
+        //Rcpp::Rcout << "i " << i << " LL_rec " << LL_rec(i) << " x_normal " << - arma::accu(-0.5*(log(2 * M_PI) + pow(x_normal,2) ) ) << std::endl;
+        //Rcpp::Rcout << "i " << i << " LL_rec " << LL_rec(i) << " x_student " <<  accu(sum_LL_marginal) << std::endl;
+        
+        //LL_rec[i] = LL_rec[i] +  accu(sum_LL_stu) + accu(sum_LL_gamma) ;
+        LL_rec[0] = LL_rec[0] +  sum_LL_stu[0] + sum_LL_gamma[0] ;
+        LL_rec[1] = LL_rec[1] +  sum_LL_stu[1] + sum_LL_gamma[1] ;
+        //Rcpp::Rcout << "i " << i << " sum_LL_stu " <<  sum_LL_stu << " sum_LL_gamma " <<  sum_LL_gamma << std::endl;
+    }
+    LL_rec_1[i] = LL_rec[0];
+    LL_rec_2[i] = LL_rec[1];
+    
+    if (disttype > NORMDIST){
+        #pragma omp parallel for default(none) shared(x_student,z,gid,g_mat,nu,gamma,zeta, t_max,n_max,g_count,n_group,sum_LL_cond,sum_LL_gamma, disttype)                
+        for (int k = 0; k < n_group; k++){
+            sum_LL_gamma[k] = log_InvGammaG(zeta,nu(k)/2, t_max, n_max, k);
+        }
+        LL_rec_jwZ_1[i] = LL_rec_1[i] +  sum_LL_gamma[0];    
+        LL_rec_jwZ_2[i] = LL_rec_2[i] +  sum_LL_gamma[1];    
+    }
+    
+}
 
 // [[Rcpp::export]]
 List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlength_, SEXP other_) {
@@ -631,6 +683,9 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
         gid[i]--;
         g_mat[gid[i]][g_count[gid[i]]] = i;
         g_count[gid[i]]++;
+    }
+    for( int i = 0; i < n_group; i++){ 
+        Rcpp::Rcout << " g_count " << i << ": " <<  g_count[i] << std::endl;
     }
     Rcpp::Rcout << " Data input :" << " Checked" << std::endl;
     
@@ -667,6 +722,7 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
     }
     if (disttype == HSSTDIST){
         gamma = Rcpp::as<arma::rowvec>(init["gamma"]);
+        if (gamma(0) == 0 ) gamma.fill(-0.01);
     }
 
     Rcpp::Rcout << " disttype " << disttype << std::endl;
@@ -1053,7 +1109,7 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
                         denum_mh = likelihood_group_t(x_student, x_normal,z,rho, gid,g_mat[k], gamma, zeta,zeta_sqrt,
                                                       t_max,n_max, k,j, g_count[k], LL_cond, true);
                         //if (k == 0 && j == 105) std::cout << " The denum_mh1 " << denum_mh << std::endl;
-                        denum_mh += - 0.5 * log(zeta(j,k))*(g_count[k] + nu(k)) - nu(k)/2/zeta(j,k) - logStudentDensity(log(zeta(j,k)), mode_target, cov_target, 4);
+                        denum_mh += - 0.5 * log(zeta(j,k))*(g_count[k] + nu(k) ) - nu(k)/2/zeta(j,k) - logStudentDensity(log(zeta(j,k)), mode_target, cov_target, 4);
 
 
                         alpha = num_mh - denum_mh;
@@ -1111,7 +1167,7 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
 
             if (modelselect){
 
-                ///////////////////////////////////
+                /////////////////////////////////
                 if ( i == 3*iter/4-1){
                     int first_row = 0;
                     int first_col = iter/2;
@@ -1152,26 +1208,36 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
                     Rcpp::Rcout << "map_index " << map_index << " gamma_map " << gamma_map << std::endl;
                     Rcpp::Rcout << "map_index " << map_index << " f0_map " << f0_map << std::endl;
                     sleep(1);
-                    gen_rho(x_student_DIC_post,x_normal_DIC_post,u,z,rho_DIC,f_DIC,psi_DIC,gid,g_mat, g_count, a_post,b_post,f0_post,nu_post,gamma_post, zeta, zeta_sqrt,t_max,n_max,n_group, disttype,true);
-                    gen_rho(x_student_DIC_map,x_normal_DIC_map,u,z,rho_DIC,f_DIC,psi_DIC,gid,g_mat, g_count, a_map,b_map,f0_map,nu_map,gamma_map, zeta, zeta_sqrt,t_max,n_max,n_group, disttype,true);
+                    gen_rho(x_student_DIC_post,x_normal_DIC_post,u,z,rho_DIC,f_DIC,psi_DIC,gid,g_mat, g_count,
+                            a_post,b_post,f0_post,nu_post,gamma_post, zeta, zeta_sqrt,t_max,n_max,n_group, disttype,true);
+                    gen_rho(x_student_DIC_map,x_normal_DIC_map,u,z,rho_DIC,f_DIC,psi_DIC,gid,g_mat, g_count,
+                            a_map,b_map,f0_map,nu_map,gamma_map, zeta, zeta_sqrt,t_max,n_max,n_group, disttype,true);
 
                    }
 
 
                 model_select_LL(x_student, x_normal, z, gid, g_mat, g_count, nu, gamma, zeta, sum_LL_cond, LL_rec, LL_rec_jwZ,
                                 t_max, n_max, n_group, i, disttype);
+                //LL_split(x_student, x_normal, z, gid, g_mat, g_count, nu, gamma, zeta, sum_LL_cond, LL_rec_DIC4, LL_rec_jwZ_DIC4,
+                //        LL_rec_DIC6, LL_rec_jwZ_DIC6,t_max, n_max, n_group, i, disttype);
 
                 if ( i > 3*iter/4-1){
+                    #pragma omp parallel for default(none) shared(x_student_DIC_post, x_student_DIC_map, x_normal_DIC_post, x_normal_DIC_map, zeta, gamma_post, gamma_map, zeta_sqrt, gid, t_max,n_max,n_group)
+                    for( int k = 0; k < n_max; k++){
+                        x_normal_DIC_post.col(k) = (x_student_DIC_post.col(k) - zeta.col(gid[k]) * gamma_post(gid[k]) )/zeta_sqrt.col(gid[k]);
+                        x_normal_DIC_map.col(k) = (x_student_DIC_map.col(k) - zeta.col(gid[k]) * gamma_map(gid[k]) )/zeta_sqrt.col(gid[k]);
+                    }
                     gen_rho(x_student_DIC_post,x_normal_DIC_post,u,z,rho_DIC,f_DIC,psi_DIC,gid,g_mat, g_count, a_post,b_post,f0_post,nu_post,gamma_post, zeta, zeta_sqrt,t_max,n_max,n_group, disttype,false);
                     initLL = likelihood(x_normal_DIC_post,z,rho_DIC,t_max,n_max, LL_cond_DIC, sum_LL_cond_DIC, false);
-                    model_select_LL(x_student_DIC_post, x_normal_DIC_post, z, gid, g_mat, g_count, nu_post, gamma_post, zeta, sum_LL_cond_DIC, LL_rec_DIC4, LL_rec_jwZ_DIC4,
-                                    t_max, n_max, n_group, i, disttype);
+                    model_select_LL(x_student_DIC_post, x_normal_DIC_post, z, gid, g_mat, g_count, nu_post, gamma_post, zeta,
+                                    sum_LL_cond_DIC, LL_rec_DIC4, LL_rec_jwZ_DIC4,t_max, n_max, n_group, i, disttype);
 
                     gen_rho(x_student_DIC_map,x_normal_DIC_map,u,z,rho_DIC,f_DIC,psi_DIC,gid,g_mat, g_count, a_map,b_map,f0_map,nu_map,gamma_map, zeta, zeta_sqrt,t_max,n_max,n_group, disttype,false);
                     initLL = likelihood(x_normal_DIC_map,z,rho_DIC,t_max,n_max, LL_cond_DIC, sum_LL_cond_DIC, false);
-                    model_select_LL(x_student_DIC_map, x_normal_DIC_map, z, gid, g_mat, g_count, nu_map, gamma_map, zeta, sum_LL_cond_DIC, LL_rec_DIC6, LL_rec_jwZ_DIC6,
-                                    t_max, n_max, n_group, i, disttype);
+                    model_select_LL(x_student_DIC_map, x_normal_DIC_map, z, gid, g_mat, g_count, nu_map, gamma_map, zeta,
+                                    sum_LL_cond_DIC, LL_rec_DIC6, LL_rec_jwZ_DIC6,t_max, n_max, n_group, i, disttype);
                 }
+                
                 // Rcpp::Rcout << "i " << i << " LL_rec " << LL_rec(i) << " LL_rec_jwZ " << LL_rec_jwZ(i) << " LL_rec4 " << LL_rec_DIC4(i) << " LL_rec_jwZ4 " << LL_rec_jwZ_DIC4(i) <<
                 //          " LL_rec6 " << LL_rec_DIC6(i) << " LL_rec_jwZ6 " << LL_rec_jwZ_DIC6(i) << " " << LL_rec_jwZ(i) - arma::accu(-0.5*(log(2 * M_PI) + pow(z,2) ) ) - LL_rec(i) << " " << arma::accu(-0.5*(log(2 * M_PI) + pow(z,2) ) ) << std::endl;
 
@@ -1228,6 +1294,8 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
         Rcpp::Rcout << "i " << i << " logsigma_f " << logsigma_f[0] << " " << logsigma_f[1] << " " << logsigma_f[2]  << " " << logsigma_f[3] << " " << logsigma_f[4] << " " << logsigma_f[5]  << " " << logsigma_f[6] << " " << logsigma_f[7] << " " << logsigma_f[8] << " " << logsigma_f[9] <<  std::endl;
         Rcpp::Rcout << "i " << i << " logsigma_nu " ; logsigma_nu.raw_print(Rcout, "");
         Rcpp::Rcout << "i " << i << " logsigma_gamma " ; logsigma_gamma.raw_print(Rcout, "");
+        Rcpp::Rcout << "i " << i << " x_student NA " << x_student.has_nan() << " max(gamma) " << max(gamma) << " min(gamma) " << min(gamma) << " max(f0) " << max(f0) << " min(f0) " << min(f0) << std::endl;
+        
         //    Rcpp::Rcout << "i " << i << " acount_zeta " << acount_zeta(0,0) << " " << acount_zeta(0,1) << " " << acount_zeta(0,2)  << " " << acount_zeta(0,3) << " " << acount_zeta(0,4) << " " << acount_zeta(0,5)  << " " << acount_zeta(0,6) << " " << acount_zeta(0,7) << " " << acount_zeta(0,8) << " " << acount_zeta(0,9) <<  std::endl;
 
         acount_f.fill(0);
@@ -1252,7 +1320,7 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
     if (modelselect){
 
             int first_row = 0;
-            int first_col = iter/2;
+            int first_col = 3*iter/4;
             int last_row = n_group-1;
             int last_col = iter-1;
 
@@ -1288,19 +1356,22 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
             p_mat(0) = num_params;
         }
     
+
+    
+    
     List MCMCout            = List::create(Rcpp::Named("score_rec") = score_rec,
                                      Rcpp::Named("a_rec") = a_rec,
                                      Rcpp::Named("b_rec") = b_rec,
                                      Rcpp::Named("f0_rec") = f0_rec,
                                      Rcpp::Named("nu_rec") = nu_rec,
-                                     //Rcpp::Named("zeta_rec") = zeta_rec,
+                                     Rcpp::Named("gamma_rec") = gamma_rec,
+                                     Rcpp::Named("zeta_rec") = zeta_rec,
                                      
                                      Rcpp::Named("rho_rec") = rho,
                                      Rcpp::Named("f_rec") = f,
                                      Rcpp::Named("psi_rec") = psi,
                                      Rcpp::Named("x_student") = x_student,
                                      Rcpp::Named("x_normal") = x_normal,
-                                     Rcpp::Named("gamma_rec") = gamma_rec,
                                      
                                      Rcpp::Named("LL_rec") = LL_rec,
                                      Rcpp::Named("LL_rec_jwZ") = LL_rec_jwZ,
@@ -1308,9 +1379,8 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
                                      Rcpp::Named("LL_rec_jwZ_DIC4") = LL_rec_jwZ_DIC4,
                                      Rcpp::Named("LL_rec_DIC6") = LL_rec_DIC6,
                                      Rcpp::Named("LL_rec_jwZ_DIC6") = LL_rec_jwZ_DIC6,
-                                     // Rcpp::Named("DIC") = DIC_mat,
-                                     // Rcpp::Named("p_DIC") = p_mat                                    
-                                     Rcpp::Named("p_DIC") = dskewt(x_student.col(1), nu(1), gamma(1))
+                                     Rcpp::Named("DIC") = DIC_mat,
+                                     Rcpp::Named("p_DIC") = p_mat                                    
                                      //Rcpp::Named("num_params") = num_params,
                                      //Rcpp::Named("AIC") = AIC,
                                      //Rcpp::Named("BIC") = BIC 
