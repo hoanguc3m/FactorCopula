@@ -13,7 +13,7 @@ library("Rcpp")
 library(xtable)
 
 # Compile Cpp file
-sourceCpp("parallel_block_modelselection.cpp")
+sourceCpp("Gskew.cpp")
 
 # data list as input: 
 #     u_mat is copula data matrix (eg. 1000 * 100)
@@ -39,7 +39,7 @@ for (i in 1:n_group){
   zeta_new[,i] <- rinvgamma(n = t_max,shape = nu_true[i]/2, scale = nu_true[i]/2)
 }
 gamma_new = rep(-0.2,n_group)
-inits <- list(a = rep(0.05,n_group), b= rep(0.98,n_group), f0 = rep(1.5,n_group), z = rnorm(t_max), nu = nu_new, zeta = zeta_new, gamma = gamma_new)
+inits <- list(a = rep(0.05,n_group), b= rep(0.98,n_group), f0 = rep(1.5,n_max), z = rnorm(t_max), nu = nu_new, zeta = zeta_new, gamma = gamma_new)
 
 # We have 10000 iterations into 1000 batches
 iter_num <- 10000
