@@ -16,8 +16,11 @@
 #include <omp.h>
 #include <ctime>
 #include <RcppGSL.h>
+#include <gsl/gsl_roots.h>
 #include <gsl/gsl_sf_bessel.h>
 #include <gsl/gsl_integration.h>
+#include <gsl/gsl_errno.h>
+#include <gsl/gsl_math.h>
 #include <iomanip>      // std::setprecision
 
 // [[Rcpp::plugins(openmp)]]
@@ -108,17 +111,17 @@ arma::colvec dskewt(arma::colvec  x, double nu, double gamma){
 }
 
 
-struct dskewhyp_params {double mu; double delta;double beta;double nu;}; 
+struct qskewhyp_params {double u; double mu; double delta;double beta;double nu;}; 
 
 /**  
- * Density for the hyperbolic skew t distribution with struct dskewhyp_params
+ * Density for the hyperbolic skew t distribution with struct qskewhyp_params
  * @param    x, (mu, delta,beta,nu)
  * @return  double p(x | nu, gamma)
  */
 
 // [[Rcpp::export]]
 double dskewhypGSL(double  x_student, void * p){
-    struct dskewhyp_params * params = (struct dskewhyp_params *)p;
+    struct qskewhyp_params * params = (struct qskewhyp_params *)p;
     
     double mu = (params->mu);
     double delta = (params->delta);
@@ -131,8 +134,128 @@ double dskewhypGSL(double  x_student, void * p){
                             sqrt(pow(beta,2) * (pow(delta,2) + pow(x_student - mu,2))) +
                             beta * (x_student - mu) - lgamma(nu*0.5) - log(M_PI)*0.5 -
                             ((nu + 1)*0.5) * log(pow(delta,2) + pow(x_student - mu,2))*0.5;
-    
     return(exp(dskewhyp));
+}
+
+double pskewhypGSL(double  x_student, void * p){
+    struct qskewhyp_params * params = (struct qskewhyp_params *)p;
+    
+    double mu = (params->mu);
+    double delta = (params->delta);
+    double beta = (params->beta);
+    double nu = (params->nu);
+    double u = (params->u);
+    
+    struct qskewhyp_params params_p = {u,0,sqrt(nu),beta,nu};
+
+    gsl_function F;
+    F.function = &dskewhypGSL;
+    F.params = &params_p;
+
+
+    double result; double error;
+    gsl_integration_workspace * w = gsl_integration_workspace_alloc(1000);
+
+    gsl_integration_qagil (&F, x_student, 0, 1e-7, 1000,
+                           w, &result, &error);
+    
+    gsl_integration_workspace_free(w);
+    return(result - u);
+
+}
+
+void my_pdskewhypGSL(double  x_student, void * p, double *pskew, double *dskew){
+    struct qskewhyp_params * params = (struct qskewhyp_params *)p;
+    
+    double mu = (params->mu);
+    double delta = (params->delta);
+    double beta = (params->beta);
+    double nu = (params->nu);
+    double u = (params->u);
+    
+    struct qskewhyp_params params_p = {u,0,sqrt(nu),beta,nu};
+    
+    double dskewhyp = exp( ((1 - nu)*0.5) * log(2) + nu * log(delta) +
+                           ((nu + 1)*0.5) * log(fabs(beta)) +
+                           log(gsl_sf_bessel_Knu_scaled((nu + 1)*0.5,sqrt(pow(beta,2)*(pow(delta,2) + pow(x_student - mu,2))) )) -
+                           sqrt(pow(beta,2) * (pow(delta,2) + pow(x_student - mu,2))) +
+                           beta * (x_student - mu) - lgamma(nu*0.5) - log(M_PI)*0.5 -
+                           ((nu + 1)*0.5) * log(pow(delta,2) + pow(x_student - mu,2))*0.5 );
+    
+    gsl_function F;
+    F.function = &dskewhypGSL;
+    F.params = &params_p;
+    
+    
+    double result; double error;
+    gsl_integration_workspace * w = gsl_integration_workspace_alloc(1000);
+    
+    gsl_integration_qagil (&F, x_student, 0, 1e-7, 1000,
+                           w, &result, &error);
+    gsl_integration_workspace_free(w);
+    
+    *dskew = dskewhyp;
+    *pskew = result - u;
+}
+
+double qskewt_extreme(double u, double gamma, double nu){
+    
+    struct qskewhyp_params params = {u,0,sqrt(nu),gamma,nu};
+    
+    int status;
+    int iter = 0, max_iter = 100;
+    
+    const gsl_root_fdfsolver_type *T;
+    gsl_root_fdfsolver *s;
+    
+    double x0,x;
+    
+    
+    
+    gsl_function_fdf FDF;
+    
+    FDF.f = &pskewhypGSL;
+    FDF.df = &dskewhypGSL;
+    FDF.fdf = &my_pdskewhypGSL;
+    FDF.params = &params;
+    
+    //    std::cout << " GSL_FN_FDF_EVAL_F(&FDF,x) " << GSL_FN_FDF_EVAL_F(&FDF,x) << std::endl;
+    //    std::cout << " GSL_FN_FDF_EVAL_DF(&FDF,x) " << GSL_FN_FDF_EVAL_DF(&FDF,x) << std::endl;
+    //    double * y; double * dy;
+    //    GSL_FN_FDF_EVAL_F_DF(&FDF,x,y,dy);
+    //    std::cout << " GSL_FN_FDF_EVAL_F_DF(&FDF,x,y,dy) " << " " <<  y << " " << dy << std::endl;
+    
+    
+    // T = gsl_root_fdfsolver_secant;
+    // T = gsl_root_fdfsolver_steffenson;
+    T = gsl_root_fdfsolver_newton;
+    s = gsl_root_fdfsolver_alloc (T);
+    gsl_root_fdfsolver_set (s, &FDF, x);
+    
+    
+    //    printf ("using %s method\n",
+    //          gsl_root_fdfsolver_name (s));
+    //
+    //    printf ("%-5s %10s %10s %10s\n",
+    //          "iter", "root", "err", "err(est)");
+    do
+    {
+        iter++;
+        status = gsl_root_fdfsolver_iterate (s);
+        x0 = x;
+        x = gsl_root_fdfsolver_root (s);
+        status = gsl_root_test_delta (x, x0, 0, 1e-1);
+        
+        //          if (status == GSL_SUCCESS)
+        //            printf ("Converged:\n");
+        
+        //          printf ("%5d %10.7f %+10.7f %10.7f\n",
+        //                  iter, x, x - x_true, x - x0);
+    }
+    while (status == GSL_CONTINUE && iter < max_iter);
+    
+    gsl_root_fdfsolver_free (s);
+    return(x);
 }
 
 /** 
@@ -188,7 +311,7 @@ double dskew_uni(double  x, double nu, double beta,double delta){
  * @return  [xLow,xHigh]
  * @citation adapt from SkewHyperbolic pakage in R
  */
-void skewhypCalcRange(double mu, double nu, double beta,double delta, double& xLow, double& xHigh, double tol = 1e-7){
+void skewhypCalcRange(double mu, double nu, double beta,double delta, double& xLow, double& xHigh, double tol = 5e-8){
     
     double distMean = mu + (beta*pow(delta,2))/(nu-2);
     xHigh = distMean + delta;
@@ -223,7 +346,7 @@ void qskewt(arma::mat& x_student, arma::mat& u,
             double nu,double gamma, 
             int t_max, int n_max, int k, int num_mem){
     
-    struct dskewhyp_params params = {0,sqrt(nu),gamma,nu};               
+    struct qskewhyp_params params = {0.05,0,sqrt(nu),gamma,nu};               // u = 0.05 for initial
     gsl_integration_workspace * w = gsl_integration_workspace_alloc(1000);
     double result; double error;
     
@@ -232,9 +355,9 @@ void qskewt(arma::mat& x_student, arma::mat& u,
     F.params = &params;
     
     arma::vec xseq(1033);
-    arma::vec Fseq(1033);  
-    arma::vec fseq(1033);  
-    
+    arma::vec Fseq(1033);
+    arma::vec fseq(1033);
+
     double xLow; double xHigh;
     skewhypCalcRange(0,nu, gamma,sqrt(nu), xLow, xHigh);
     double step = (xHigh - xLow)/(1032);
@@ -247,25 +370,37 @@ void qskewt(arma::mat& x_student, arma::mat& u,
     gsl_integration_qagil (&F, xseq(0), 0, 1e-7, 1000,
                            w, &result, &error);
     fseq(0) = result;
-    
-    for (int i = 1; i < 1033; i++){ 
+
+    for (int i = 1; i < 1033; i++){
         gsl_integration_qag (&F, xseq(i-1),xseq(i), 0, 1e-7, 1000,1,
                              w, &result, &error);
-        fseq(i) = result;}  
+        fseq(i) = result;}
     Fseq = log(arma::cumsum(fseq));     // Becuase u in log scale
-    //Fseq = arma::cumsum(fseq);     
-    
+    //Fseq = arma::cumsum(fseq);
+
     gsl_integration_workspace_free (w);
 
     arma::vec qskewt_linear(t_max);
     
     // Interpolate in the a grid [xLow, xHigh] 
-    #pragma omp parallel for default(none) private(qskewt_linear) shared(Fseq, xseq, u,num_mem,g_mem,x_student)
+    #pragma omp parallel for default(none) private(qskewt_linear) shared(Fseq, xseq, u,num_mem,g_mem,x_student, gamma, nu, t_max)
     for( int g = 0; g < num_mem; g++){
-        interp1(Fseq, xseq, u.col(g_mem[g]), qskewt_linear);  
+        interp1(Fseq, xseq, u.col(g_mem[g]), qskewt_linear);
         x_student.col(g_mem[g]) = qskewt_linear;
-    }
-  
+
+        // for ( int j = 0; j < t_max; j++){
+        //     if (u(j,g_mem[g]) < 0.005 || u(j,g_mem[g]) > 0.995) {
+        //         x_student(j,g_mem[g]) = qskewt_extreme(exp(u(j,g_mem[g]) ), gamma, nu);
+        //     }
+        // 
+        // }
+        // for ( int j = 0; j < t_max; j++){
+        //         x_student(j,g_mem[g]) = qskewt_extreme(exp(u(j,g_mem[g]) ), gamma, nu);
+        //     
+        // }  
+        
+        }
+
 }
 
 /**  
@@ -731,6 +866,142 @@ void model_select_LL(arma::mat& x_student, arma::mat& x_normal,
     
 }
 
+/*
+ * Check the current state given the initial parameter
+ */
+// [[Rcpp::export]]
+List Cop_state(SEXP data_, SEXP init_, SEXP other_){
+
+    // Data input
+    Rcpp::List data(data_);
+    int t_max  = as<int>(data["t_max"]);
+    int n_max  = as<int>(data["n_max"]);
+    arma::mat u = Rcpp::as<arma::mat>(data["u"]);
+    std::vector<int> gid  = data["gid"];
+    // Create matrix to handle group data
+    int n_group = 0;
+    for( int i = 0; i < n_max; i++){if (n_group < gid[i]) n_group = gid[i];}
+    std::vector<std::vector<int> >  g_mat(n_group, std::vector<int>(n_max));
+    std::vector<int> g_count(n_group);
+    
+    
+    for( int i = 0; i < n_max; i++){
+        gid[i]--;
+        g_mat[gid[i]][g_count[gid[i]]] = i;
+        g_count[gid[i]]++;
+    }
+    for( int i = 0; i < n_group; i++){ 
+        Rcpp::Rcout << " g_count " << i << ": " <<  g_count[i] << std::endl;
+    }
+    Rcpp::Rcout << " Data input :" << " Checked" << std::endl;
+    
+    // Init hyperparams
+    Rcpp::List init(init_);
+    Rcpp::List other(other_);
+    
+    int core = other["core"];
+    int disttype = other["disttype"];
+    bool modelselect = other["modelselect"];
+    arma::rowvec a  = init["a"];
+    arma::rowvec b  = init["b"];
+    arma::rowvec f0 = init["f0"];
+    arma::vec  z = Rcpp::as<arma::vec>(init["z"]);
+    arma::vec  z_temp = z;
+    arma::rowvec nu = zeros<rowvec>(n_group);      
+    arma::mat zeta = zeros(t_max, n_group);
+    arma::mat zeta_sqrt = zeros(t_max, n_group);
+    arma::rowvec gamma = zeros<rowvec>(n_group);
+    Rcpp::Rcout << " Core " << core << std::endl;
+    Rcpp::Rcout << " Init hyperparams :" << " Checked" << std::endl;
+
+    if (disttype > NORMDIST){
+        nu = Rcpp::as<arma::rowvec>(init["nu"]);        
+        zeta = Rcpp::as<arma::mat>(init["zeta"]);
+        zeta_sqrt = sqrt(zeta);
+    }
+    if (disttype == HSSTDIST){
+        gamma = Rcpp::as<arma::rowvec>(init["gamma"]);
+        if (gamma(0) == 0 ) gamma.fill(-0.001);
+        u = log(u);         // Critical difference of HSSTDIST
+        
+    }
+
+    Rcpp::Rcout << " disttype " << disttype << std::endl;
+
+    // Init matrix
+    // From init, generate f and rho, x
+    
+    arma::mat x_normal = zeros(t_max, n_max);
+    arma::mat x_student = zeros(t_max, n_max);
+
+    arma::mat f = zeros(t_max, n_max);
+    arma::mat psi = zeros(t_max, n_max);
+    arma::mat rho = zeros(t_max, n_max);
+
+
+    arma::mat LL_cond = zeros(t_max, n_max);
+    arma::rowvec sum_LL_cond(n_max);
+    arma::rowvec sum_LL_Zeta(n_group);
+    
+    int iter = 1;
+    double nu_low = 2;
+    arma::rowvec LL_rec(iter);
+    arma::rowvec LL_rec_jwZ(iter);
+
+    // With the init, generate the rho process
+    if (disttype == NORMDIST) {
+        for ( int i = 0; i < n_max; i++){
+            for ( int t = 0; t < t_max; t++){
+                x_normal(t,i) = R::qnorm(u(t,i),0,1,true,false);
+            }
+        }
+        gen_rho(x_student,x_normal,u,z,rho,f,psi,gid,g_mat, g_count, a,b,f0,nu,gamma, zeta, zeta_sqrt,t_max,n_max,n_group, disttype,false);
+    }else{
+        gen_rho(x_student,x_normal,u,z,rho,f,psi,gid,g_mat, g_count, a,b,f0,nu,gamma, zeta, zeta_sqrt,t_max,n_max,n_group, disttype,true);
+        if (disttype == HSSTDIST) { nu_low = 4;}
+    }
+    
+    if (modelselect){
+        
+        for (int i = 0; i < n_max; i++){
+            sum_LL_cond[i] = likelihood_uniseries(x_normal, z, rho, t_max,n_max, i, LL_cond, sum_LL_cond, false);
+        }
+        
+        if (disttype == NORMDIST){
+            LL_cond = LL_cond - ( - 0.5*(log(2 * M_PI) + pow(x_normal,2) ) );
+        } else{
+            if (disttype == STUDDIST){
+                #pragma omp parallel for default(none) shared(x_student,z,gid,g_mat,nu,gamma,zeta, t_max,n_max,g_count,n_group, LL_cond)
+                for (int i = 0; i < n_max; i++){
+                    for (int t = 0; t < t_max; t++){
+                        LL_cond(t,i) = LL_cond(t,i) - R::dt(x_student(t,i), nu[gid[i]], true) -
+                            0.5*log(zeta(t,gid[i])) ;
+                    }
+                }
+                
+                
+            } else {
+                #pragma omp parallel for default(none) shared(x_student,z,gid,g_mat,nu,gamma,zeta, t_max,n_max,g_count,n_group, LL_cond)
+                for (int i = 0; i < n_max; i++){
+                    LL_cond.col(i) = LL_cond.col(i) - dskewt(x_student.col(i), nu[gid[i]], gamma[gid[i]]) -
+                        0.5*log(zeta.col(gid[i])) ;
+                }
+            }
+            
+            
+        }
+    }
+    
+    
+    
+    List MCMCout            = List::create(Rcpp::Named("rho") = rho,
+                                           Rcpp::Named("f") = f,
+                                           Rcpp::Named("psi") = psi,
+                                           Rcpp::Named("x_student") = x_student,
+                                           Rcpp::Named("x_normal") = x_normal,
+                                           Rcpp::Named("LL_cond") = LL_cond);
+    return MCMCout;
+}
 
 /**  
  * MCMC algorithm
@@ -834,12 +1105,13 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
     arma::mat f_DIC = zeros(t_max, n_max);
     arma::mat psi_DIC = zeros(t_max, n_max);
     
-    arma::mat f0_rec = zeros(n_max,iter);
-    arma::mat a_rec = zeros(n_group,iter);
-    arma::mat b_rec = zeros(n_group,iter);
-    arma::mat nu_rec = zeros(n_group,iter);
-    arma::mat gamma_rec = zeros(n_group,iter);
-    arma::cube zeta_rec = zeros(t_max,n_group,iter);
+    arma::mat f0_rec = zeros(n_max,numbatches);
+    arma::mat a_rec = zeros(n_group,numbatches);
+    arma::mat b_rec = zeros(n_group,numbatches);
+    arma::mat nu_rec = zeros(n_group,numbatches);
+    arma::mat gamma_rec = zeros(n_group,numbatches);
+    arma::cube zeta_rec = zeros(t_max,n_group,numbatches);
+    arma::mat z_rec(t_max,numbatches);
     
     arma::mat LL_cond = zeros(t_max, n_max);
     arma::mat LL_cond_temp = zeros(t_max, n_max);
@@ -849,15 +1121,15 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
     arma::rowvec sum_LL_cond_DIC(n_max);
     arma::rowvec sum_LL_Zeta(n_group);
     
-    arma::rowvec LL_rec(iter, fill::zeros);
-    arma::rowvec LL_rec_jwZ(iter, fill::zeros);    
+    arma::rowvec LL_rec(numbatches, fill::zeros);
+    arma::rowvec LL_rec_jwZ(numbatches, fill::zeros);    
     
-    arma::rowvec LL_rec_DIC4(iter, fill::zeros);
-    arma::rowvec LL_rec_jwZ_DIC4(iter, fill::zeros);    
-    arma::rowvec LL_rec_DIC6(iter, fill::zeros);
-    arma::rowvec LL_rec_jwZ_DIC6(iter, fill::zeros);    
+    arma::rowvec LL_rec_DIC4(numbatches, fill::zeros);
+    arma::rowvec LL_rec_jwZ_DIC4(numbatches, fill::zeros);    
+    arma::rowvec LL_rec_DIC6(numbatches, fill::zeros);
+    arma::rowvec LL_rec_jwZ_DIC6(numbatches, fill::zeros);    
     
-    arma::mat score_rec(t_max,iter);
+
     
     arma::mat psi_inv(n_max,n_max);
     arma::mat  Sigma(1,1);
@@ -865,9 +1137,9 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
     arma::colvec mean_xt;
     arma::rowvec logsigma_f(n_max); logsigma_f.fill(-2); // add log_sigma move for f0
     arma::rowvec logsigma_a(n_group); logsigma_a.fill(-4); // add log_sigma move for a
-    arma::rowvec logsigma_b(n_group); logsigma_b.fill(-4); // add log_sigma move for b
-    arma::rowvec logsigma_nu(n_group); logsigma_nu.fill(1); // add log_sigma move for nu
-    arma::rowvec logsigma_gamma(n_group); logsigma_gamma.fill(-2); // add log_sigma move for gamma
+    arma::rowvec logsigma_b(n_group); logsigma_b.fill(-5); // add log_sigma move for b
+    arma::rowvec logsigma_nu(n_group); logsigma_nu.fill(0); // add log_sigma move for nu
+    arma::rowvec logsigma_gamma(n_group); logsigma_gamma.fill(-3); // add log_sigma move for gamma
     
     
     
@@ -938,7 +1210,9 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
     Rcpp::Rcout << "Beginning MCMC...\n\n" << std::endl;
     int i=0;
 
-    clock_t t;
+    // Timing variables
+    clock_t start = clock();
+    clock_t end;
     
     for( int numbat = 0; numbat < numbatches; numbat++){
         for( int batlen = 0; batlen < batchlength; batlen++){
@@ -1053,7 +1327,6 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
             }
 
             // gen z
-            #pragma omp parallel for default(none) private(psi_inv,Sigma,me,mean_xt) shared(t_max,rho,n_max,x_normal,z)
             for( int j = 0; j < t_max; j++){
                 psi_inv =  diagmat(1/(ones(1,n_max) - pow(rho.row(j),2)));
 
@@ -1061,13 +1334,24 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
                 me = Sigma * rho.row(j) * psi_inv;
                 mean_xt = me * x_normal.row(j).t() ;
                 z[j] = R::rnorm( (mean_xt[0]) , sqrt(Sigma[0]));
+
+                //#pragma omp parallel for default(none) shared(x_normal,z, rho,a,b,f0,f,psi,j,gid,t_max,n_max)
+                for (int i = 0; i <n_max; i++){
+                    if (j < t_max-1){
+                        dlogc(x_normal,z, rho,f,psi,j,n_max,i);
+                        f(j+1,i) = (1-b(gid[i]))*f0(i) + a(gid[i]) * psi(j,i) + b(gid[i]) * f(j,i);
+                        if (f(j+1,i) < -5.5 || f(j,i) == -5.5 ) {f(j+1,i) = -5.5;}             //adding checking step
+                        if (f(j+1,i) > 5.5 || f(j,i) == 5.5 ) {f(j+1,i) = 5.5;}             //adding checking step
+                        rho(j+1,i) = (1-exp(-f(j+1,i) ))/(1+exp(-f(j+1,i) ));
+                    }
+                }
             }
 
 
-            gen_rho(x_student,x_normal,u,z,rho,f,psi,gid,g_mat,g_count,a,b,f0,nu,gamma,zeta,zeta_sqrt,t_max,n_max,n_group,disttype,false);
+            //gen_rho(x_student,x_normal,u,z,rho,f,psi,gid,g_mat,g_count,a,b,f0,nu,gamma,zeta,zeta_sqrt,t_max,n_max,n_group,disttype,false);
             initLL = likelihood(x_normal,z,rho,t_max,n_max, LL_cond, sum_LL_cond, false);
 
-            score_rec.col(i) =  z;
+            z_rec.col(i) =  z;
 
             if (disttype > NORMDIST){
                 //Gen nu in groups
@@ -1124,7 +1408,7 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
                     //Gen gamma in groups
                     #pragma omp parallel for default(none) private(num_mh,denum_mh,alpha,temp) shared(x_student,x_normal,x_student_temp,x_normal_temp,u,z,rho,rho_temp,f0,f,f_temp,psi,psi_temp,gid,g_mat,i,b,a,nu,logsigma_nu,nu_temp,acount_nu,nu_rec,gamma,logsigma_gamma,gamma_temp,acount_gamma,gamma_rec,zeta, zeta_sqrt,t_max,n_max,g_count,n_group,LL_cond,LL_cond_temp,sum_LL_cond,sum_LL_cond_temp,disttype)
                     for (int k = 0; k < n_group; k++){
-
+                    if (gamma_temp[k] > -3 && gamma_temp[k] < 3){
                         gamma_temp[k] = gamma[k] + exp(logsigma_gamma[k])*R::rnorm(0,1) ; // The correlation of MCMC goes around -0.3 to -0.2 so it does not worth to make a correlation
                         //gamma_temp[k] = gamma[k];
 
@@ -1161,7 +1445,9 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
 
                         }
 
-
+                    } else {
+                        gamma_rec(k,i) = gamma(k);
+                    }
                     }
                 }
 
@@ -1246,14 +1532,14 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
 
             }
 
-            if (modelselect){
-
+            if ((modelselect) & (batlen == batchlength-1)){
+                
                 /////////////////////////////////
-                if ( i == 3*iter/4-1){
+                if ( i == 3*numbatches/4-1){
                     int first_row = 0;
-                    int first_col = iter/2;
+                    int first_col = numbatches/2;
                     int last_row = n_group-1;
-                    int last_col = 3*iter/4-1;
+                    int last_col = 3*numbatches/4-1;
                     a_post = trans(mean(a_rec.submat(first_row, first_col, last_row, last_col ), 1));
                     b_post = trans(mean(b_rec.submat(first_row, first_col, last_row, last_col ), 1));
                     nu_post = trans(mean(nu_rec.submat(first_row, first_col, last_row, last_col ), 1));
@@ -1268,9 +1554,9 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
                     sleep(1);
                     ///////////////////////////////////
 
-                    double LL_post = LL_rec[iter/2-1];
-                    int map_index = iter/2-1;
-                    for (int k = 0; k< iter/2-1; k++){
+                    double LL_post = LL_rec[numbatches/2-1];
+                    int map_index = numbatches/2-1;
+                    for (int k = 0; k< numbatches/2-1; k++){
                         if (LL_post < LL_rec[k]) {
                             map_index = k;
                             LL_post = LL_rec[k];
@@ -1281,7 +1567,7 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
                     nu_map = trans(nu_rec.col(map_index));
                     gamma_map = trans(gamma_rec.col(map_index));
                     f0_map = trans(f0_rec.col(map_index));
-                    //z_temp = score_rec.col(map_index);
+                    //z_temp = z_rec.col(map_index);
 
                     Rcpp::Rcout << "map_index " << map_index << " a_map " << a_map << std::endl;
                     Rcpp::Rcout << "LL_rec_jwZ " << LL_rec_jwZ(map_index) << " b_map " << b_map << std::endl;
@@ -1302,7 +1588,7 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
                 //LL_split(x_student, x_normal, z, gid, g_mat, g_count, nu, gamma, zeta, sum_LL_cond, LL_rec_DIC4, LL_rec_jwZ_DIC4,
                 //        LL_rec_DIC6, LL_rec_jwZ_DIC6,t_max, n_max, n_group, i, disttype);
 
-                if ( i > 3*iter/4-1){
+                if ( i > 3*numbatches/4-1){
     	            if (disttype > NORMDIST){
 	                    #pragma omp parallel for default(none) shared(x_student_DIC_post, x_student_DIC_map, x_normal_DIC_post, x_normal_DIC_map, zeta, gamma_post, gamma_map, zeta_sqrt, gid, t_max,n_max,n_group)
 	                    for( int k = 0; k < n_max; k++){
@@ -1326,9 +1612,9 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
 
             }
 
-            i++;
-
         }
+        
+        i++;
         for (int jj=0; jj<n_max; jj++) {
             if (acount_f[jj] > batchlength * TARGACCEPT)
                 logsigma_f[jj] = logsigma_f[jj] + adaptamount(numbat);
@@ -1362,6 +1648,8 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
         }
         Rcpp::Rcout.precision(3);
         Rcpp::Rcout.setf(ios::fixed);
+        if (i % 1000 == 0) Rcpp::Rcout << "i " << i << " a " << a[0] << " b " << b[0] << " nu " << nu[0] << " gamma " << gamma[0] << " r0 " << (1 - exp(-f0[0]))/(1 + exp(-f0[0])) << std::endl;
+        
         Rcpp::Rcout << "i " << i << " a " ; a.raw_print(Rcout, "");
         Rcpp::Rcout << "i " << i << " b "; b.raw_print(Rcout, "");
         Rcpp::Rcout << "i " << i << " LL_rec_jwZ " << LL_rec_jwZ(i-1) << " LL_rec " << LL_rec(i-1) << " LL_rec_jwZ4 " << LL_rec_jwZ_DIC4(i-1) << " LL_rec4 " << LL_rec_DIC4(i-1) <<
@@ -1377,7 +1665,6 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
         Rcpp::Rcout << "i " << i << " logsigma_nu " ; logsigma_nu.raw_print(Rcout, "");
         Rcpp::Rcout << "i " << i << " logsigma_gamma " ; logsigma_gamma.raw_print(Rcout, "");
         Rcpp::Rcout << "i " << i << " x_student NA " << x_student.has_nan() << " " << min(min(x_student)) << " " << max(max(x_student)) << " max(gamma) " << max(gamma) << " min(gamma) " << min(gamma) << " max(f0) " << max(f0) << " min(f0) " << min(f0) << std::endl;
-
         Rcpp::Rcout << "i " << i << " acount_zeta "; min(acount_zeta,0).raw_print(Rcout, "");
 
         acount_f.fill(0);
@@ -1387,9 +1674,10 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
         acount_gamma.fill(0);
         acount_zeta.fill(0);
     }
-    t = clock() - t;
-    std::cout << "It took " << ((double)t)/double(CLOCKS_PER_SEC) << " seconds.\n"  <<  std::endl;
-
+    end = clock();
+    double delta_t = static_cast<double>(end - start) / CLOCKS_PER_SEC;
+    std::cout << "It took " << delta_t << " seconds.\n"  <<  std::endl;
+    
     arma::rowvec DIC_mat(8,fill::zeros);
     arma::rowvec p_mat(8,fill::zeros);
 
@@ -1402,9 +1690,9 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
     if (modelselect){
 
             int first_row = 0;
-            int first_col = 3*iter/4;
+            int first_col = 3*numbatches/4;
             int last_row = n_group-1;
-            int last_col = iter-1;
+            int last_col = numbatches-1;
 
             Rcpp::Rcout << "first_col " << first_col << " last_col " << last_col << " " << mean( LL_rec_jwZ.subvec(first_col,last_col) ) << " " << mean(LL_rec_jwZ_DIC4.subvec(first_col,last_col));
 
@@ -1441,7 +1729,7 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
 
     
     
-    List MCMCout            = List::create(Rcpp::Named("score_rec") = score_rec,
+    List MCMCout            = List::create(Rcpp::Named("z_rec") = z_rec,
                                      Rcpp::Named("a_rec") = a_rec,
                                      Rcpp::Named("b_rec") = b_rec,
                                      Rcpp::Named("f0_rec") = f0_rec,
@@ -1449,9 +1737,9 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
                                      Rcpp::Named("gamma_rec") = gamma_rec,
                                      Rcpp::Named("zeta_rec") = zeta_rec,
                                      
-                                     //Rcpp::Named("last_state") = List::create(rho,f,psi,x_student,x_normal),
-                                     //Rcpp::Named("post_state") = List::create(x_student_DIC_post,a_post,b_post,f0_post,nu_post,gamma_post),
-                                     //Rcpp::Named("map_state") = List::create(x_student_DIC_map,a_map,b_map,f0_map,nu_map,gamma_map),
+                                     Rcpp::Named("last_state") = List::create(rho,f,psi,x_student,x_normal),
+                                     Rcpp::Named("post_state") = List::create(x_student_DIC_post,a_post,b_post,f0_post,nu_post,gamma_post),
+                                     Rcpp::Named("map_state") = List::create(x_student_DIC_map,a_map,b_map,f0_map,nu_map,gamma_map),
                                      // Rcpp::Named("rho_rec") = rho,
                                      // Rcpp::Named("f_rec") = f,
                                      // Rcpp::Named("psi_rec") = psi,
@@ -1465,7 +1753,7 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
                                      Rcpp::Named("LL_rec_DIC6") = LL_rec_DIC6,
                                      Rcpp::Named("LL_rec_jwZ_DIC6") = LL_rec_jwZ_DIC6,
                                      Rcpp::Named("DIC") = DIC_mat,
-                                     //Rcpp::Named("p_DIC") = p_mat                                    
+                                     Rcpp::Named("p_DIC") = p_mat                                    
                                      //Rcpp::Named("num_params") = num_params,
                                      //Rcpp::Named("AIC") = AIC,
                                      //Rcpp::Named("BIC") = BIC 
@@ -1476,6 +1764,388 @@ List MCMCstep(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlengt
     END_RCPP
 }
 
+/**  
+ * MCMC algorithm - fix a,b,nu,gamma
+ * @param    data, init, batch setting, threads
+ * @return   list of MCMC iterations
+ */
+
+
+// [[Rcpp::export]]
+List mcmc_fix_abng(SEXP data_, SEXP init_,SEXP iter_,SEXP numbatches_,SEXP batchlength_, SEXP other_) {
+    BEGIN_RCPP
+    
+    int seed = 126;
+    std::srand(seed);
+    
+    // Data input
+    Rcpp::List data(data_);
+    int t_max  = as<int>(data["t_max"]);
+    int n_max  = as<int>(data["n_max"]);
+    arma::mat u = Rcpp::as<arma::mat>(data["u"]);
+    std::vector<int> gid  = data["gid"];
+    // Create matrix to handle group data
+    int n_group = 0;
+    for( int i = 0; i < n_max; i++){if (n_group < gid[i]) n_group = gid[i];}
+    std::vector<std::vector<int> >  g_mat(n_group, std::vector<int>(n_max));
+    std::vector<int> g_count(n_group);
+    
+    for( int i = 0; i < n_max; i++){
+        gid[i]--;
+        g_mat[gid[i]][g_count[gid[i]]] = i;
+        g_count[gid[i]]++;
+    }
+    for( int i = 0; i < n_group; i++){ 
+        Rcpp::Rcout << " g_count " << i << ": " <<  g_count[i] << std::endl;
+    }
+    Rcpp::Rcout << " Data input :" << " Checked" << std::endl;
+    
+    //Number of MCMC interations
+    int iter  = as<int>(iter_);
+    int numbatches  = as<int>(numbatches_);
+    int batchlength  = as<int>(batchlength_);
+    Rcpp::Rcout << " MCMC interations :" << " Checked" << std::endl;
+    
+    
+    // Init hyperparams
+    Rcpp::List init(init_);
+    Rcpp::List other(other_);
+    
+    int core = other["core"];
+    int disttype = other["disttype"];
+    bool modelselect = other["modelselect"];
+    arma::rowvec a  = init["a"];
+    arma::rowvec b  = init["b"];
+    arma::rowvec f0 = init["f0"];
+    arma::vec  z = Rcpp::as<arma::vec>(init["z"]);
+    arma::vec  z_temp = z;
+    arma::rowvec nu = zeros<rowvec>(n_group);      
+    arma::mat zeta = zeros(t_max, n_group);
+    arma::mat zeta_sqrt = zeros(t_max, n_group);
+    arma::rowvec gamma = zeros<rowvec>(n_group);
+    Rcpp::Rcout << " Core " << core << std::endl;
+    Rcpp::Rcout << " Init hyperparams :" << " Checked" << std::endl;
+    
+    if (disttype > NORMDIST){
+        nu = Rcpp::as<arma::rowvec>(init["nu"]);        
+        zeta = Rcpp::as<arma::mat>(init["zeta"]);
+        zeta_sqrt = sqrt(zeta);
+    }
+    if (disttype == HSSTDIST){
+        gamma = Rcpp::as<arma::rowvec>(init["gamma"]);
+        if (gamma(0) == 0 ) gamma.fill(-0.001);
+        u = log(u);         // Critical difference of HSSTDIST
+        
+    }
+    
+    Rcpp::Rcout << " disttype " << disttype << std::endl;
+    
+    // Init matrix
+    // From init, generate f and rho, x
+    
+    arma::mat x_normal = zeros(t_max, n_max);
+    arma::mat x_student = zeros(t_max, n_max);
+    arma::mat x_normal_temp = zeros(t_max, n_max);
+    arma::mat x_student_temp = zeros(t_max, n_max);
+    arma::mat x_normal_DIC_post = zeros(t_max, n_max);
+    arma::mat x_student_DIC_post = zeros(t_max, n_max);
+    arma::mat x_normal_DIC_map = zeros(t_max, n_max);
+    arma::mat x_student_DIC_map = zeros(t_max, n_max);
+    
+    arma::mat f = zeros(t_max, n_max);
+    arma::mat f_temp = zeros(t_max, n_max);
+    arma::rowvec f0_temp = f0;
+    arma::rowvec f0_post(n_max);
+    arma::rowvec f0_map(n_max); 
+    
+    arma::mat psi = zeros(t_max, n_max);
+    arma::mat psi_temp = zeros(t_max, n_max);
+    arma::mat rho = zeros(t_max, n_max);
+    arma::mat rho_temp = zeros(t_max, n_max);
+    
+    arma::mat rho_DIC = zeros(t_max, n_max);
+    arma::mat f_DIC = zeros(t_max, n_max);
+    arma::mat psi_DIC = zeros(t_max, n_max);
+    
+    arma::mat f0_rec = zeros(n_max,numbatches);
+    arma::mat a_rec = zeros(n_group,numbatches);
+    arma::mat b_rec = zeros(n_group,numbatches);
+    arma::mat nu_rec = zeros(n_group,numbatches);
+    arma::mat gamma_rec = zeros(n_group,numbatches);
+    arma::cube zeta_rec = zeros(t_max,n_group,numbatches);
+    
+    arma::mat LL_cond = zeros(t_max, n_max);
+    arma::mat LL_cond_temp = zeros(t_max, n_max);
+    arma::mat LL_cond_DIC = zeros(t_max, n_max);
+    
+    arma::rowvec sum_LL_cond(n_max);
+    arma::rowvec sum_LL_cond_temp(n_max);
+    arma::rowvec sum_LL_cond_DIC(n_max);
+    arma::rowvec sum_LL_Zeta(n_group);
+    
+    arma::rowvec LL_rec(numbatches);
+    arma::rowvec LL_rec_jwZ(numbatches);    
+    
+    arma::rowvec LL_rec_DIC4(numbatches, fill::zeros);
+    arma::rowvec LL_rec_jwZ_DIC4(numbatches, fill::zeros);    
+    arma::rowvec LL_rec_DIC6(numbatches, fill::zeros);
+    arma::rowvec LL_rec_jwZ_DIC6(numbatches, fill::zeros);    
+    
+    arma::mat z_rec(t_max,numbatches);
+    
+    arma::mat psi_inv(n_max,n_max);
+    arma::mat  Sigma(1,1);
+    arma::rowvec me(n_max);
+    arma::colvec mean_xt;
+    arma::rowvec logsigma_f(n_max); logsigma_f.fill(-2); // add log_sigma move for f0
+    arma::rowvec logsigma_a(n_group); logsigma_a.fill(-4); // add log_sigma move for a
+    arma::rowvec logsigma_b(n_group); logsigma_b.fill(-4); // add log_sigma move for b
+    arma::rowvec logsigma_nu(n_group); logsigma_nu.fill(1); // add log_sigma move for nu
+    arma::rowvec logsigma_gamma(n_group); logsigma_gamma.fill(-2); // add log_sigma move for gamma
+    
+    
+    
+    arma::rowvec acount_f(n_max); acount_f.fill(0); // add count acceptance rate for f0
+    arma::rowvec acount_a(n_group); acount_a.fill(0); // add count acceptance rate for a
+    arma::rowvec acount_b(n_group); acount_b.fill(0); // add count acceptance rate for b
+    arma::rowvec acount_nu(n_group); acount_nu.fill(0); // add count acceptance rate for nu
+    arma::rowvec acount_gamma(n_group); acount_gamma.fill(0); // add count acceptance rate for gamma
+    arma::mat acount_zeta(t_max,n_group); acount_zeta.fill(0); // add count acceptance rate for zeta
+    
+    
+    
+    
+    double temp; double num_mh; double denum_mh; double alpha;
+    double mode_target;  double cov_target;
+    double nu_low = 2; // Lowest value of nu in student or skew student
+    
+    arma::rowvec a_temp = a; 
+    arma::rowvec b_temp = b; 
+    
+    arma::mat zeta_temp = zeta;
+    arma::mat zeta_sqrt_temp = zeta_sqrt;
+    
+    arma::rowvec nu_temp = nu;
+    
+    arma::rowvec gamma_temp = gamma;
+    
+    // With the init, generate the rho process
+    if (disttype == NORMDIST) {
+        for ( int i = 0; i < n_max; i++){
+            for ( int t = 0; t < t_max; t++){
+                x_normal(t,i) = R::qnorm(u(t,i),0,1,true,false);
+            }
+        }
+        gen_rho(x_student,x_normal,u,z,rho,f,psi,gid,g_mat, g_count, a,b,f0,nu,gamma, zeta, zeta_sqrt,t_max,n_max,n_group, disttype,false);
+        x_normal_DIC_post = x_normal;
+        x_normal_DIC_map = x_normal;
+    }else{
+        gen_rho(x_student,x_normal,u,z,rho,f,psi,gid,g_mat, g_count, a,b,f0,nu,gamma, zeta, zeta_sqrt,t_max,n_max,n_group, disttype,true);
+        if (disttype == HSSTDIST) { nu_low = 4;}
+    }
+    
+    double initLL = likelihood(x_normal,z,rho,t_max,n_max, LL_cond, sum_LL_cond, false);
+    rho_temp.row(0) = rho.row(0);
+    f_temp.row(0) = f0;
+    
+    // Set parallel    
+    #ifdef _OPENMP
+        omp_set_num_threads(core);
+    #endif
+    
+    
+    Rcpp::Rcout << "Beginning MCMC...\n\n" << std::endl;
+
+    clock_t t;
+    
+    for( int numbat = 0; numbat < numbatches; numbat++){
+        // Gen f0
+        f0_rec.col(numbat) = f0.t();
+        
+        // Gen a
+        a_rec.col(numbat) = a.t();
+        
+        // Gen b
+        b_rec.col(numbat) = b.t();
+        
+        //Gen nu in groups
+        nu_rec.col(numbat) = nu.t();
+        
+        //Gen gamma in groups
+        gamma_rec.col(numbat) = gamma.t();
+        
+        for( int batlen = 0; batlen < batchlength; batlen++){
+            // gen z
+            for( int j = 0; j < t_max; j++){
+                psi_inv =  diagmat(1/(ones(1,n_max) - pow(rho.row(j),2)));
+                
+                Sigma = 1/(1 +rho.row(j) * psi_inv * rho.row(j).t() );
+                me = Sigma * rho.row(j) * psi_inv;
+                mean_xt = me * x_normal.row(j).t() ;
+                z[j] = R::rnorm( (mean_xt[0]) , sqrt(Sigma[0]));
+                
+                //#pragma omp parallel for default(none) shared(x_normal,z, rho,a,b,f0,f,psi,j,gid,t_max,n_max)
+                for (int i = 0; i <n_max; i++){
+                    if (j < t_max-1){
+                        dlogc(x_normal,z, rho,f,psi,j,n_max,i);
+                        f(j+1,i) = (1-b(gid[i]))*f0(i) + a(gid[i]) * psi(j,i) + b(gid[i]) * f(j,i);
+                        if (f(j+1,i) < -5.5 || f(j,i) == -5.5 ) {f(j+1,i) = -5.5;}             //adding checking step
+                        if (f(j+1,i) > 5.5 || f(j,i) == 5.5 ) {f(j+1,i) = 5.5;}             //adding checking step
+                        rho(j+1,i) = (1-exp(-f(j+1,i) ))/(1+exp(-f(j+1,i) ));
+                    }
+                }
+                
+            }
+            
+            //gen_rho(x_student,x_normal,u,z,rho,f,psi,gid,g_mat,g_count,a,b,f0,nu,gamma,zeta,zeta_sqrt,t_max,n_max,n_group,disttype,false);
+            initLL = likelihood(x_normal,z,rho,t_max,n_max, LL_cond, sum_LL_cond, false);
+            
+            if (batlen == 0) z_rec.col(numbat) =  z;
+            
+            if (disttype > NORMDIST){              
+                // Gen zeta
+                #pragma omp parallel for default(none) private(num_mh,denum_mh,alpha,temp,mode_target,cov_target) shared(t_max,n_max,x_student,x_normal,x_normal_temp,z,rho,rho_temp,zeta,zeta_sqrt,zeta_temp,zeta_sqrt_temp,nu,gamma,f0,f,f_temp,psi,psi_temp,zeta_rec,a,b,acount_zeta,gid,n_group,g_mat,g_count,LL_cond,LL_cond_temp,disttype)
+                for (int k = 0; k < n_group; k++){
+                    for( int j = 0; j < t_max; j++){
+                        
+                        find_target(x_student, x_normal,z, rho, gid,g_mat[k], zeta, zeta_sqrt, nu(k),gamma(k), t_max, n_max, k, j, g_count[k], mode_target, cov_target, disttype);
+                        
+                        double ran_stu = R::rt(4);
+                        double log_zeta_temp = mode_target + sqrt(cov_target)*ran_stu;
+                        
+                        zeta_temp(j,k) = exp(log_zeta_temp);
+                        zeta_sqrt_temp(j,k) = sqrt(zeta_temp(j,k));
+                        
+                        // Compare the likelihood
+                        
+                        num_mh = likelihood_group_t(x_student, x_normal_temp,z,rho, gid,g_mat[k], gamma, zeta_temp,zeta_sqrt_temp,
+                                                    t_max,n_max, k,j, g_count[k], LL_cond_temp, true);
+                        //if (k == 0 && j == 105) std::cout << " The  num_mh1 " << num_mh << std::endl;
+                        //num_mh += -log(zeta_temp(j,k))*(g_count[k]/2 + nu(k)/2) - nu(k)/2/zeta_temp(j,k) - R::dt(ran_stu, 4, true); //Becuase g_count[k] +1 is the number of dimension
+                        num_mh += -0.5 * log(zeta_temp(j,k))*(g_count[k] + nu(k) ) - nu(k)/2/zeta_temp(j,k) - logStudentDensity(log_zeta_temp, mode_target, cov_target, 4); //Becuase g_count[k] +1 is the number of dimension
+                        //if (k == 0 && j == 105) std::cout << " The  num_mh2 " << - log(zeta_temp(j,k))*(g_count[k]/2 + nu(k)/2) - nu(k)/2/zeta_temp(j,k) << " nu " << nu(k) << std::endl;
+                        //if (k == 0 && j == 105) std::cout << " The  num_mh3 " << - logStudentDensity(log_zeta_temp, mode_target, cov_target, 4) << std::endl;
+                        denum_mh = likelihood_group_t(x_student, x_normal,z,rho, gid,g_mat[k], gamma, zeta,zeta_sqrt,
+                                                      t_max,n_max, k,j, g_count[k], LL_cond, true);
+                        //if (k == 0 && j == 105) std::cout << " The denum_mh1 " << denum_mh << std::endl;
+                        denum_mh += - 0.5 * log(zeta(j,k))*(g_count[k] + nu(k) ) - nu(k)/2/zeta(j,k) - logStudentDensity(log(zeta(j,k)), mode_target, cov_target, 4);
+                        
+                        
+                        alpha = num_mh - denum_mh;
+                        temp = log(R::runif(0,1));
+                        
+                        if (alpha > temp){
+                            
+                            zeta(j,k) = zeta_temp(j,k);
+                            zeta_sqrt(j,k) = zeta_sqrt_temp(j,k);
+                            
+                            for( int g = 0; g < g_count[k]; g++){
+                                x_normal(j,g_mat[k][g]) = x_normal_temp(j,g_mat[k][g]);
+                                LL_cond(j,g_mat[k][g]) = LL_cond_temp(j,g_mat[k][g]);
+                                // Remember to check rho is ok or not
+                                if (j < t_max-1){
+                                    dlogc(x_normal,z, rho,f,psi,j,n_max,g_mat[k][g]);
+                                    f(j+1,g_mat[k][g]) = (1-b(k))*f0(k) + a(k) * psi(j,g_mat[k][g]) + b(k) * f(j,g_mat[k][g]);
+                                    if (f(j+1,g_mat[k][g]) < -5.5 || f(j,g_mat[k][g]) == -5.5 ) {f(j+1,g_mat[k][g]) = -5.5;}             //adding checking step
+                                    if (f(j+1,g_mat[k][g]) > 5.5 || f(j,g_mat[k][g]) == 5.5 ) {f(j+1,g_mat[k][g]) = 5.5;}             //adding checking step
+                                    rho(j+1,g_mat[k][g]) = (1-exp(-f(j+1,g_mat[k][g]) ))/(1+exp(-f(j+1,g_mat[k][g]) ));
+                                }
+                                
+                            }
+                            acount_zeta(j,k)++;
+                        } else {
+                            
+                            for( int g = 0; g < g_count[k]; g++){
+                                // Remember to check rho is ok or not
+                                if (j < t_max-1){
+                                    dlogc(x_normal,z, rho,f,psi,j,n_max,g_mat[k][g]);
+                                    f(j+1,g_mat[k][g]) = (1-b(k))*f0(k) + a(k) * psi(j,g_mat[k][g]) + b(k) * f(j,g_mat[k][g]);
+                                    if (f(j+1,g_mat[k][g]) < -5.5 || f(j,g_mat[k][g]) == -5.5 ) {f(j+1,g_mat[k][g]) = -5.5;}             //adding checking step
+                                    if (f(j+1,g_mat[k][g]) > 5.5 || f(j,g_mat[k][g]) == 5.5) {f(j+1,g_mat[k][g]) = 5.5;}             //adding checking step
+                                    rho(j+1,g_mat[k][g]) = (1-exp(-f(j+1,g_mat[k][g]) ))/(1+exp(-f(j+1,g_mat[k][g]) ));
+                                }
+                                
+                            }
+                            
+                        }
+                        
+                        
+                    }
+                }
+                
+                // Remember to recal sum_LL at the end.
+                if (batlen == 0) zeta_rec.slice(numbat) = zeta;   
+                
+                double temp_LL;
+                
+                #pragma omp parallel for default(none) private(temp_LL) shared(x_normal,z, rho, t_max,n_max, LL_cond, sum_LL_cond)
+                for (int g =0; g < n_max; g++){
+                    temp_LL = likelihood_uniseries(x_normal,z, rho, t_max,n_max, g, LL_cond, sum_LL_cond, true);
+                }
+            }
+            
+            
+        }
+        
+        
+        Rcpp::Rcout.precision(3);
+        Rcpp::Rcout.setf(ios::fixed);
+        Rcpp::Rcout << "i " << numbat << " a " ; a.raw_print(Rcout, "");
+        Rcpp::Rcout << "i " << numbat << " b "; b.raw_print(Rcout, "");
+        Rcpp::Rcout.precision(2);
+        Rcpp::Rcout.setf(ios::fixed);
+        Rcpp::Rcout << "i " << numbat << " nu0 " ; nu.raw_print(Rcout, "");
+        Rcpp::Rcout << "i " << numbat << " gamma0 "; gamma.raw_print(Rcout, "");
+        Rcpp::Rcout << "i " << numbat << " x_student NA " << x_student.has_nan() << " " << min(min(x_student)) << " " << max(max(x_student)) << " max(gamma) " << max(gamma) << " min(gamma) " << min(gamma) << " max(f0) " << max(f0) << " min(f0) " << min(f0) << std::endl;
+    
+        Rcpp::Rcout << "i " << numbat << " acount_zeta "; min(acount_zeta,0).raw_print(Rcout, "");
+        
+        acount_f.fill(0);
+        acount_a.fill(0);
+        acount_b.fill(0);
+        acount_nu.fill(0);
+        acount_gamma.fill(0);
+        acount_zeta.fill(0);
+    }
+    t = clock() - t;
+    std::cout << "It took " << ((double)t)/double(CLOCKS_PER_SEC) << " seconds.\n"  <<  std::endl;
+    
+    arma::rowvec DIC_mat(8,fill::zeros);
+    arma::rowvec p_mat(8,fill::zeros);
+    
+    int num_params = n_max + 2 * n_group;
+    if (disttype == STUDDIST){ num_params = num_params + n_group;}
+    if (disttype == HSSTDIST){ num_params = num_params + 2 * n_group;}
+    double AIC = 0;
+    double BIC = 0;
+    
+    
+    
+    
+    List MCMCout            = List::create(Rcpp::Named("z_rec") = z_rec,
+                                           Rcpp::Named("a_rec") = a_rec,
+                                           Rcpp::Named("b_rec") = b_rec,
+                                           Rcpp::Named("f0_rec") = f0_rec,
+                                           Rcpp::Named("nu_rec") = nu_rec,
+                                           Rcpp::Named("gamma_rec") = gamma_rec,
+                                           Rcpp::Named("zeta_rec") = zeta_rec,
+                                           
+                                           Rcpp::Named("last_state") = List::create(rho,f,psi,x_student,x_normal),
+
+                                           Rcpp::Named("LL_rec") = LL_rec,
+                                           Rcpp::Named("LL_rec_jwZ") = LL_rec_jwZ,
+                                           Rcpp::Named("LL_rec_DIC4") = LL_rec_DIC4,
+                                           Rcpp::Named("LL_rec_jwZ_DIC4") = LL_rec_jwZ_DIC4,
+                                           Rcpp::Named("LL_rec_DIC6") = LL_rec_DIC6,
+                                           Rcpp::Named("LL_rec_jwZ_DIC6") = LL_rec_jwZ_DIC6,
+                                           Rcpp::Named("DIC") = DIC_mat,
+                                           Rcpp::Named("p_DIC") = p_mat         
+    );
+    return MCMCout;
+    PutRNGstate();
+    
+    END_RCPP
+}
 
 // You can include R code blocks in C++ files processed with sourceCpp
 // (useful for testing and development). The R code will be automatically
